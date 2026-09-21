@@ -1097,7 +1097,7 @@ $("export").addEventListener("click", () => {
 
 // Scan to open on startup: ?file=name.stl in the page URL (like a command-line
 // argument). Without it, DEFAULT_SCAN is used. You can also pick a file in the panel.
-const DEFAULT_SCAN = "test_mesh.stl";
+const DEFAULT_SCAN = "lower_arch.stl";
 const scanName = new URLSearchParams(window.location.search).get("file") || DEFAULT_SCAN;
 let scanBytes = null;
 try {
