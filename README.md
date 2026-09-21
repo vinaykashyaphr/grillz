@@ -49,7 +49,7 @@ Under **3 · Stones**:
 - Adjust **stone size**, **gap between stones**, **stone margin**, and
   **prong size** with the sliders to fine-tune the layout.
 
-## Step 4 — Generate the Shell
+## Step 4: Generate the Shell
 
 Under **4 · Shell**, adjust the **Thickness** slider, then click
 **Generate shell**. This builds the gold shell over your marked region.
