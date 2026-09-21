@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Grillz POC</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101114; color: #e6e6e6;
+               font: 13px system-ui, sans-serif; overflow: hidden; }
+  #panel { position: fixed; top: 12px; left: 12px; width: 290px; max-height: calc(100vh - 24px);
+           overflow-y: auto; padding: 12px; box-sizing: border-box;
+           background: rgba(30, 33, 38, .94); border: 1px solid #3a3f47; border-radius: 8px;
+           display: flex; flex-direction: column; gap: 12px; }
+  .head { display: flex; align-items: center; gap: 6px; }
+  .head strong { flex: 1; color: #d9a35f; font-size: 15px; }
+  #panel.folded > :not(.head) { display: none; }
+  #panel.folded { width: auto; }
+  h4 { margin: 0 0 6px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #8b95a1; }
+  section { display: flex; flex-direction: column; gap: 8px; }
+  label { display: grid; grid-template-columns: 1fr auto; row-gap: 3px; }
+  label input[type=range] { grid-column: 1 / -1; }
+  label span.v { color: #d9a35f; font-family: ui-monospace, monospace; }
+  input[type=range] { width: 100%; accent-color: #d9a35f; }
+  button { padding: 6px 10px; border: 1px solid #4a505a; background: #2a2e35; color: inherit;
+           border-radius: 6px; cursor: pointer; font: inherit; }
+  button:hover { background: #343942; }
+  button.primary { background: #d9a35f; color: #1b1d21; border-color: #d9a35f; font-weight: 600; }
+  button.primary:hover { background: #e6b374; }
+  .seg { display: flex; }
+  .seg button { flex: 1; border-radius: 0; margin-left: -1px; }
+  .seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+  .seg button:last-child { border-radius: 0 6px 6px 0; }
+  .seg button.on { background: #d9a35f; color: #1b1d21; border-color: #d9a35f; font-weight: 600; }
+  .row { display: flex; gap: 8px; }
+  .row > button { flex: 1; }
+  .muted { color: #9aa3ad; font-size: 12px; line-height: 1.45; }
+  details summary { cursor: pointer; color: #9aa3ad; font-size: 12px; }
+  #debugLog { width: 100%; height: 130px; box-sizing: border-box; margin-top: 6px; background: #15171b; color: #cfd6de;
+              border: 1px solid #3a3f47; border-radius: 6px; font: 11px ui-monospace, monospace; }
+  #status { color: #cfd6de; }
+  #status.warn { color: #ffb37a; font-weight: 600; }
+  #legend { position: fixed; right: 12px; bottom: 12px; padding: 8px 10px; border-radius: 6px;
+            background: rgba(30, 33, 38, .8); color: #9aa3ad; font-size: 12px; }
+</style>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.3/build/index.module.js"
+} }
+</script>
+
+<script>
+  // Defined before grillz.js loads so the "ready" event cannot be missed.
+  window.wasmReady = false;
+  var Module = {
+    onRuntimeInitialized() {
+      window.wasmReady = true;
+      window.dispatchEvent(new Event("wasm-ready"));
+    }
+  };
+</script>
+<script src="grillz.js"></script>
+</head>
+
+<body>
+<div id="panel">
+  <div class="head">
+    <strong>Grillz POC</strong>
+    <button id="fold" title="Hide or show the panel">Hide</button>
+    <button id="undo" title="Ctrl+Z">Undo</button>
+    <button id="redo" title="Ctrl+Y">Redo</button>
+  </div>
+  <div>
+    <div id="status" class="muted">Loading WASM...</div>
+    <div id="count" class="muted"></div>
+  </div>
+
+  <section>
+    <h4>1 · Scan</h4>
+    <input type="file" id="file" accept=".stl">
+  </section>
+
+  <section>
+    <h4>2 · Region and stone areas</h4>
+    <div class="seg" id="tool">
+      <button data-v="outline" class="on">Outline</button>
+      <button data-v="quick">Quick</button>
+      <button data-v="stone">Stone area</button>
+    </div>
+    <div id="toolHint" class="muted"></div>
+    <label id="angleRow" style="display:none">Angle limit <span class="v" id="angleV">30°</span>
+      <input type="range" id="angle" min="5" max="90" step="1" value="30">
+    </label>
+    <div class="row">
+      <button id="closeLoop">Close and fill (Enter)</button>
+      <button id="clearSel">Clear all</button>
+    </div>
+  </section>
+
+  <section>
+    <h4>3 · Stones</h4>
+    <div class="seg" id="decor">
+      <button data-v="Plain" class="on">Plain</button>
+      <button data-v="Diamonds">Diamonds</button>
+    </div>
+    <div class="seg" id="pattern">
+      <button data-v="straight" class="on">Straight</button>
+      <button data-v="honeycomb">Honeycomb</button>
+    </div>
+    <label>Stone size <span class="v" id="ssizeV"></span><input type="range" id="ssize"></label>
+    <label>Gap between stones <span class="v" id="sgapV"></span><input type="range" id="sgap"></label>
+    <label>Stone margin <span class="v" id="smarginV"></span><input type="range" id="smargin"></label>
+    <label>Prong size <span class="v" id="prongV"></span><input type="range" id="prong" min="5" max="45" step="1" value="20"></label>
+  </section>
+
+  <section>
+    <h4>4 · Shell</h4>
+    <label>Thickness <span class="v" id="thicknessV"></span><input type="range" id="thickness"></label>
+    <button id="gen" class="primary">Generate shell</button>
+  </section>
+
+  <section>
+    <h4>View and export</h4>
+    <div class="seg" id="view">
+      <button data-v="scan" class="on">Scan</button>
+      <button data-v="combined">Combined</button>
+      <button data-v="jewellery">Jewellery</button>
+    </div>
+    <div class="row">
+      <button id="focus" title="Move the camera to the shell, or to the selected region">Focus</button>
+      <button id="export">Download STL</button>
+    </div>
+  </section>
+
+  <details>
+    <summary>Debug log</summary>
+    <textarea id="debugLog" readonly></textarea>
+    <button id="copyLog">Copy log</button>
+  </details>
+</div>
+<div id="legend">Drag: orbit · Right-drag: pan · Wheel: zoom</div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+const $ = (id) => document.getElementById(id);
+const setStatus = (s, warn = false) => {
+  $("status").textContent = s;
+  $("status").classList.toggle("warn", warn);
+};
+const debugLines = [];
+function dbg(msg) {
+  const line = `${((performance.now()) / 1000).toFixed(1)}s  ${msg}`;
+  debugLines.push(line);
+  if (debugLines.length > 200) debugLines.shift();
+  const box = document.getElementById("debugLog");
+  if (box) { box.value = debugLines.join("\n"); box.scrollTop = box.scrollHeight; }
+  console.log("[grillz]", msg);
+}
+window.addEventListener("error", (e) => {
+  dbg(`ERROR: ${e.message}`);
+  setStatus(`Something went wrong: ${e.message}. See the Debug log at the bottom of the panel.`, true);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const m = e.reason && e.reason.message ? e.reason.message : String(e.reason);
+  dbg(`ERROR (async): ${m}`);
+  setStatus(`Something went wrong: ${m}. See the Debug log at the bottom of the panel.`, true);
+});
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+// ------------------------------------------------- picking acceleration ---
+// three-mesh-bvh makes clicking on 250k+ triangles instant. If it fails to
+// load, the page still works with Three.js' normal (slower) raycasting.
+let bvhReady = false;
+try {
+  const bvh = await import("three-mesh-bvh");
+  THREE.BufferGeometry.prototype.computeBoundsTree = bvh.computeBoundsTree;
+  THREE.BufferGeometry.prototype.disposeBoundsTree = bvh.disposeBoundsTree;
+  THREE.Mesh.prototype.raycast = bvh.acceleratedRaycast;
+  bvhReady = true;
+} catch (err) {
+  console.warn("three-mesh-bvh unavailable, using standard raycasting.", err);
+}
+
+// ---------------------------------------------------------------- WASM ---
+await new Promise((res) =>
+  window.wasmReady ? res() : window.addEventListener("wasm-ready", res, { once: true }));
+
+const api = {
+  load:     Module.cwrap("load_mesh", "number", ["string"]),
+  flipped:  Module.cwrap("mesh_was_flipped", "number", []),
+  mV:       Module.cwrap("mesh_vertex_count", "number", []),
+  mF:       Module.cwrap("mesh_face_count", "number", []),
+  mVp:      Module.cwrap("mesh_vertices", "number", []),
+  mFp:      Module.cwrap("mesh_faces", "number", []),
+  path:     Module.cwrap("shortest_path", "number", ["number", "number"]),
+  pathPtr:  Module.cwrap("path_buffer", "number", []),
+  fill:     Module.cwrap("fill_region", "number", ["number", "number", "number"]),
+  fillAuto: Module.cwrap("fill_region_auto", "number", ["number", "number"]),
+  grow:     Module.cwrap("grow_region", "number", ["number", "number"]),
+  fillPtr:  Module.cwrap("fill_buffer", "number", []),
+  shell:    Module.cwrap("generate_shell", "number", ["number", "number", "number"]),
+  sV:       Module.cwrap("shell_vertex_count", "number", []),
+  sF:       Module.cwrap("shell_face_count", "number", []),
+  sVp:      Module.cwrap("shell_vertices", "number", []),
+  sFp:      Module.cwrap("shell_faces", "number", []),
+};
+
+// A stale grillz.wasm (built before the C++ changed) leaves some of these undefined.
+const CNAMES = {
+  load: "load_mesh", flipped: "mesh_was_flipped", mV: "mesh_vertex_count", mF: "mesh_face_count",
+  mVp: "mesh_vertices", mFp: "mesh_faces", path: "shortest_path", pathPtr: "path_buffer",
+  fill: "fill_region", fillAuto: "fill_region_auto", grow: "grow_region", fillPtr: "fill_buffer",
+  shell: "generate_shell", sV: "shell_vertex_count", sF: "shell_face_count",
+  sVp: "shell_vertices", sFp: "shell_faces",
+};
+const missingExports = Object.keys(CNAMES).filter((k) => typeof api[k] !== "function").map((k) => CNAMES[k]);
+if (missingExports.length) {
+  dbg(`Missing WASM functions: ${missingExports.join(", ")}`);
+  setStatus(`Your grillz.wasm is out of date (missing: ${missingExports.join(", ")}). Rebuild with the em++ command, then hard-refresh.`, true);
+}
+
+// Copies a mesh out of WASM memory (slice() so growth cannot invalidate it).
+function readBuffers(countV, countF, ptrV, ptrF) {
+  const nv = countV(), nf = countF();
+  if (nv === 0 || nf === 0) return null;
+  const vp = ptrV(), fp = ptrF();
+  const pos = Module.HEAPF32.slice(vp / 4, vp / 4 + nv * 3);
+  const idx = new Uint32Array(Module.HEAP32.slice(fp / 4, fp / 4 + nf * 3).buffer);
+  return { pos, idx };
+}
+
+const readInts = (ptr, n) => Array.from(Module.HEAP32.subarray(ptr / 4, ptr / 4 + n));
+
+function wasmPath(a, b) {
+  const n = api.path(a, b);
+  return n > 0 ? readInts(api.pathPtr(), n) : null;
+}
+
+function wasmFill(loop, seedFace) {
+  const arr = Int32Array.from(loop);
+  const ptr = Module._malloc(arr.byteLength);
+  Module.HEAP32.set(arr, ptr / 4); // read HEAP32 after malloc (memory may have grown)
+  const n = api.fill(ptr, arr.length, seedFace);
+  Module._free(ptr);
+  return n > 0 ? readInts(api.fillPtr(), n) : [];
+}
+
+function wasmFillAuto(loop) {
+  const arr = Int32Array.from(loop);
+  const ptr = Module._malloc(arr.byteLength);
+  Module.HEAP32.set(arr, ptr / 4);
+  const n = api.fillAuto(ptr, arr.length);
+  Module._free(ptr);
+  return n > 0 ? readInts(api.fillPtr(), n) : [];
+}
+
+function wasmGrow(seedFace, deg) {
+  const n = api.grow(seedFace, deg);
+  return n > 0 ? readInts(api.fillPtr(), n) : [];
+}
+
+// -------------------------------------------------------- stone layout ---
+// Pure geometry (no Three.js), so it can be unit-tested on its own.
+// <layout>
+function polygonNormal(pts) {               // Newell's method
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    nx += (a[1] - b[1]) * (a[2] + b[2]);
+    ny += (a[2] - b[2]) * (a[0] + b[0]);
+    nz += (a[0] - b[0]) * (a[1] + b[1]);
+  }
+  const len = Math.hypot(nx, ny, nz);
+  return len < 1e-12 ? null : [nx / len, ny / len, nz / len];
+}
+
+function pointInPolygon(poly, x, y) {       // even-odd rule
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function distToPolygon(poly, x, y) {
+  let best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [ax, ay] = poly[j], [bx, by] = poly[i];
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    best = Math.min(best, Math.hypot(x - (ax + t * dx), y - (ay + t * dy)));
+  }
+  return best;
+}
+
+// Fits stone centres inside a closed outline. `pts` are 3D points of the
+// outline. Returns the fitting plane (centre c, normal n, axes u and v) and
+// the stone centres as 3D points lying in that plane.
+function layoutStones(pts, { pattern, size, gap, margin }) {
+  if (pts.length < 3) return null;
+  const n = polygonNormal(pts);
+  if (!n) return null;
+
+  const c = [0, 0, 0];
+  for (const p of pts) { c[0] += p[0]; c[1] += p[1]; c[2] += p[2]; }
+  c[0] /= pts.length; c[1] /= pts.length; c[2] /= pts.length;
+
+  // Rows follow the world "up" direction projected into the plane.
+  let up = [0, 0, 1];
+  let d = up[0] * n[0] + up[1] * n[1] + up[2] * n[2];
+  let v = [up[0] - d * n[0], up[1] - d * n[1], up[2] - d * n[2]];
+  if (Math.hypot(...v) < 1e-3) {
+    up = [0, 1, 0];
+    d = up[0] * n[0] + up[1] * n[1] + up[2] * n[2];
+    v = [up[0] - d * n[0], up[1] - d * n[1], up[2] - d * n[2]];
+  }
+  const vl = Math.hypot(...v);
+  v = v.map((x) => x / vl);
+  const u = [v[1] * n[2] - v[2] * n[1], v[2] * n[0] - v[0] * n[2], v[0] * n[1] - v[1] * n[0]];
+
+  const poly = pts.map((p) => {
+    const r = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+    return [r[0] * u[0] + r[1] * u[1] + r[2] * u[2], r[0] * v[0] + r[1] * v[1] + r[2] * v[2]];
+  });
+  let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+  for (const [x, y] of poly) {
+    minx = Math.min(minx, x); maxx = Math.max(maxx, x);
+    miny = Math.min(miny, y); maxy = Math.max(maxy, y);
+  }
+
+  const s = size + gap;                         // centre-to-centre distance
+  const rowStep = pattern === "honeycomb" ? (s * Math.sqrt(3)) / 2 : s;
+  const need = size / 2 + margin;               // centre must stay this far from the outline
+  const cx = (minx + maxx) / 2, cy = (miny + maxy) / 2;
+  const nxCells = Math.ceil((maxx - minx) / s / 2) + 1;
+  const nyCells = Math.ceil((maxy - miny) / rowStep / 2) + 1;
+
+  // Try a few grid shifts and keep the one that fits the most stones.
+  const place = (ox, oy) => {
+    const found = [];
+    for (let j = -nyCells - 1; j <= nyCells + 1; j++) {
+      const y = cy + oy + j * rowStep;
+      const off = pattern === "honeycomb" && (j & 1) ? s / 2 : 0;
+      for (let i = -nxCells - 1; i <= nxCells + 1; i++) {
+        const x = cx + ox + i * s + off;
+        if (pointInPolygon(poly, x, y) && distToPolygon(poly, x, y) >= need) found.push([x, y]);
+      }
+    }
+    return found;
+  };
+  let best = [];
+  for (const fx of [0, 0.25, 0.5, 0.75]) {
+    for (const fy of [0, 0.25, 0.5, 0.75]) {
+      const found = place(fx * s, fy * rowStep);
+      if (found.length > best.length) best = found;
+    }
+  }
+  const centers = best.map(([x, y]) => [
+    c[0] + u[0] * x + v[0] * y, c[1] + u[1] * x + v[1] * y, c[2] + u[2] * x + v[2] * y]);
+  return { c, n, u, v, centers };
+}
+// </layout>
+
+// --------------------------------------------------------------- scene ---
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+document.body.prepend(renderer.domElement);
+const canvas = renderer.domElement;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x101114);
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
+camera.up.set(0, 0, 1); // Z-up, like most CAD and scan data
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 0.5));
+const headlight = new THREE.DirectionalLight(0xffffff, 1.4);
+scene.add(headlight, headlight.target);
+
+const scanMat = new THREE.MeshStandardMaterial({
+  color: 0xe9e5dd, flatShading: true, roughness: 0.9, metalness: 0, envMapIntensity: 0.3,
+  side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+});
+const selMat = new THREE.MeshBasicMaterial({
+  color: 0x2fbfa5, side: THREE.DoubleSide,
+  polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+});
+const goldMat = new THREE.MeshStandardMaterial({
+  color: 0xf0c27a, metalness: 0.55, roughness: 0.38, envMapIntensity: 1.2,
+  emissive: 0x2b1c08, side: THREE.DoubleSide,
+});
+const stoneMat = new THREE.MeshStandardMaterial({
+  color: 0xf4f9ff, metalness: 0.1, roughness: 0.04, envMapIntensity: 1.6, flatShading: true,
+});
+
+try { // reflections make the gold and the stones look like metal and glass
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+} catch (err) {
+  console.warn("Environment map unavailable", err);
+  goldMat.metalness = 0.15;     // without reflections a metal would render black
+}
+
+
+function resize() {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize);
+resize();
+
+(function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  headlight.position.copy(camera.position);
+  headlight.target.position.copy(controls.target);
+  renderer.render(scene, camera);
+})();
+
+// --------------------------------------------------------------- state ---
+let data = null;                 // { pos, idx } of the loaded scan
+let scanObj = null, selObj = null, shellObj = null, stoneGroup = null;
+let scanGeom = null;
+let diag = 1, lift = 0.01, unit = "mm", scale = 1;
+let tool = "outline", decoration = "Plain", pattern = "straight", view = "scan";
+const selection = new Set();
+let stoneAreas = [];             // each: { pts: [[x,y,z], ...] }
+let stoneCount = 0;
+let areasObj = null;             // red outlines of the committed stone areas
+
+const history = [];
+let hp = -1;
+
+const vertexPoint = (v) => {
+  const n = scanGeom.attributes.normal;
+  return [
+    data.pos[3 * v] + n.getX(v) * lift,
+    data.pos[3 * v + 1] + n.getY(v) * lift,
+    data.pos[3 * v + 2] + n.getZ(v) * lift,
+  ];
+};
+const vertexRaw = (v) => [data.pos[3 * v], data.pos[3 * v + 1], data.pos[3 * v + 2]];
+
+function disposeObj(obj) {
+  if (!obj) return;
+  scene.remove(obj);
+  obj.traverse?.((o) => o.geometry?.dispose?.());
+}
+
+// ----------------------------------------------------------- outliners ---
+// Click points on the scan; a path along the surface joins consecutive points.
+class Outliner {
+  constructor(color) {
+    this.ctrl = [];
+    this.segs = [];
+    this.closed = false;
+    this.line = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color }));
+    this.dots = new THREE.Points(new THREE.BufferGeometry(),
+      new THREE.PointsMaterial({ color, size: 9, sizeAttenuation: false }));
+    this.line.frustumCulled = false;
+    this.dots.frustumCulled = false;
+    scene.add(this.line, this.dots);
+    this.redraw();
+  }
+  setVisible(v) { this.line.visible = v; this.dots.visible = v; }
+  add(v) {
+    if (this.closed) return false;
+    if (this.ctrl.length) {
+      const prev = this.ctrl[this.ctrl.length - 1];
+      if (prev === v) return true;
+      const p = wasmPath(prev, v);
+      if (!p) { setStatus("No surface path between those two points."); return false; }
+      this.segs.push(p);
+    }
+    this.ctrl.push(v);
+    dbg(`outline point ${this.ctrl.length}: vertex ${v}` + (this.segs.length ? `, path of ${this.segs[this.segs.length - 1].length} vertices` : ""));
+    this.redraw();
+    return true;
+  }
+  close() {
+    if (this.closed || this.ctrl.length < 3) return false;
+    const p = wasmPath(this.ctrl[this.ctrl.length - 1], this.ctrl[0]);
+    if (!p) { setStatus("Could not close the loop."); return false; }
+    this.segs.push(p);
+    this.closed = true;
+    this.redraw();
+    return true;
+  }
+  undoPoint() {
+    if (this.closed) { this.segs.pop(); this.closed = false; }
+    else if (this.ctrl.length) {
+      this.ctrl.pop();
+      if (this.segs.length > Math.max(0, this.ctrl.length - 1)) this.segs.pop();
+    }
+    this.redraw();
+  }
+  clear() { this.ctrl = []; this.segs = []; this.closed = false; this.redraw(); }
+  loop() {                       // consecutive vertices joined by mesh edges
+    const out = [];
+    for (const s of this.segs) for (const v of s) if (out[out.length - 1] !== v) out.push(v);
+    return out;
+  }
+  redraw() {
+    const lp = [];
+    if (scanGeom) for (const s of this.segs) for (const v of s) lp.push(...vertexPoint(v));
+    const dp = [];
+    if (scanGeom) for (const v of this.ctrl) dp.push(...vertexPoint(v));
+    this.line.geometry.dispose();
+    this.line.geometry = new THREE.BufferGeometry()
+      .setAttribute("position", new THREE.Float32BufferAttribute(lp, 3));
+    this.dots.geometry.dispose();
+    this.dots.geometry = new THREE.BufferGeometry()
+      .setAttribute("position", new THREE.Float32BufferAttribute(dp, 3));
+  }
+}
+const regionOutliner = new Outliner(0xe0b070);
+const stoneOutliner = new Outliner(0xff4b2b);
+const currentOutliner = () =>
+  tool === "outline" ? regionOutliner : tool === "stone" ? stoneOutliner : null;
+
+// ------------------------------------------------------------- loading ---
+function setSlider(id, min, max, step, value) {
+  const el = $(id);
+  el.min = min; el.max = max; el.step = step; el.value = value;
+}
+function showValues() {
+  const f = (x) => (+x).toFixed(scale < 1 ? 3 : 2);
+  $("thicknessV").textContent = `${f($("thickness").value)} ${unit}`;
+  $("ssizeV").textContent = `${f($("ssize").value)} ${unit}`;
+  $("sgapV").textContent = `${f($("sgap").value)} ${unit}`;
+  $("smarginV").textContent = `${f($("smargin").value)} ${unit}`;
+  $("prongV").textContent = `${$("prong").value}%`;
+}
+
+async function loadFromBytes(bytes, name) {
+  try { await loadInner(bytes, name); }
+  catch (err) { console.error(err); setStatus(`Could not load ${name}: ${err.message}`); }
+}
+
+async function loadInner(bytes, name) {
+  setStatus(`Loading ${name}...`);
+  await nextFrame();
+  Module.FS.writeFile("/input.stl", bytes);
+  if (api.load("/input.stl") !== 0) { setStatus(`Could not read ${name}.`); return; }
+  const m = readBuffers(api.mV, api.mF, api.mVp, api.mFp);
+  if (!m) { setStatus(`No triangles found in ${name}.`); return; }
+
+  disposeObj(scanObj); disposeObj(selObj); disposeObj(shellObj); disposeObj(stoneGroup); disposeObj(areasObj);
+  shellObj = null; stoneGroup = null; areasObj = null; stoneCount = 0;
+  selection.clear();
+  stoneAreas = [];
+  data = m;
+
+  scanGeom = new THREE.BufferGeometry();
+  scanGeom.setAttribute("position", new THREE.BufferAttribute(m.pos, 3));
+  scanGeom.setIndex(new THREE.BufferAttribute(m.idx, 1));
+  scanGeom.computeVertexNormals();
+  if (bvhReady) scanGeom.computeBoundsTree({ indirect: true }); // keeps face numbers unchanged
+  scanObj = new THREE.Mesh(scanGeom, scanMat);
+  scene.add(scanObj);
+
+  // Selection overlay shares the scan's vertices; only its index list changes.
+  const selGeom = new THREE.BufferGeometry();
+  selGeom.setAttribute("position", scanGeom.getAttribute("position"));
+  selGeom.setIndex(new THREE.BufferAttribute(new Uint32Array(m.idx.length), 1));
+  selGeom.setDrawRange(0, 0);
+  selObj = new THREE.Mesh(selGeom, selMat);
+  selObj.frustumCulled = false;
+  selObj.raycast = () => {};                  // never picked
+  scene.add(selObj);
+
+  scanGeom.computeBoundingSphere();
+  const s = scanGeom.boundingSphere;
+  diag = s.radius * 2;
+  lift = diag * 0.0012;
+  controls.target.copy(s.center);
+  camera.position.copy(s.center)
+    .add(new THREE.Vector3(1, -1.5, 1).normalize().multiplyScalar(s.radius * 3));
+  camera.near = s.radius / 100;
+  camera.far = s.radius * 100;
+  camera.updateProjectionMatrix();
+
+  // Defaults follow the video (mm). For models that are clearly not in mm
+  // (e.g. a unit test cube) everything scales with the model size.
+  scale = diag > 20 ? 1 : diag / 70;
+  unit = diag > 20 ? "mm" : "u";
+  setSlider("thickness", 0.2 * scale, 3 * scale, 0.05 * scale, 0.8 * scale);
+  setSlider("ssize", 0.5 * scale, 4 * scale, 0.05 * scale, 1.5 * scale);
+  setSlider("sgap", 0, 1 * scale, 0.01 * scale, 0.1 * scale);
+  setSlider("smargin", 0, 1 * scale, 0.01 * scale, 0.2 * scale);
+  showValues();
+
+  regionOutliner.clear();
+  stoneOutliner.clear();
+  history.length = 0; hp = -1;
+  commit();
+  refreshSelection();
+  rebuildStones();
+  dbg(`loaded ${name}: ${api.mV()} vertices, ${api.mF()} faces, flipped=${api.flipped()}, bvh=${bvhReady}, diag=${diag.toFixed(2)}`);
+  setStatus(`${name}: ${api.mV().toLocaleString()} vertices, ${api.mF().toLocaleString()} triangles` +
+            (api.flipped() ? " Face orientation was flipped to point outward." : "") +
+            (bvhReady ? "" : " (fast picking unavailable, clicks may lag).") +
+            (missingExports.length ? ` WARNING: grillz.wasm is out of date (missing ${missingExports.join(", ")}). Rebuild it.` : ""),
+            missingExports.length > 0);
+}
+
+// ------------------------------------------------- selection and history ---
+function refreshSelection() {
+  if (!selObj) return;
+  const index = selObj.geometry.index;
+  let k = 0;
+  for (const f of selection) {
+    index.array[k++] = data.idx[3 * f];
+    index.array[k++] = data.idx[3 * f + 1];
+    index.array[k++] = data.idx[3 * f + 2];
+  }
+  index.needsUpdate = true;
+  selObj.geometry.setDrawRange(0, k);
+  updateCount();
+}
+
+function updateCount() {
+  $("count").textContent =
+    `${selection.size.toLocaleString()} faces selected · ${stoneAreas.length} stone area(s) · ${stoneCount} stone(s)`;
+}
+
+const snapshot = () => ({ sel: Int32Array.from(selection), areas: stoneAreas.slice() });
+function commit() {
+  history.length = hp + 1;
+  history.push(snapshot());
+  hp = history.length - 1;
+}
+function restore(s) {
+  selection.clear();
+  for (const f of s.sel) selection.add(f);
+  stoneAreas = s.areas.slice();
+  clearShell();
+  refreshSelection();
+  rebuildStones();
+}
+function undo() { if (hp > 0) { hp--; restore(history[hp]); } }
+function redo() { if (hp < history.length - 1) { hp++; restore(history[hp]); } }
+
+function selectionChanged() {
+  clearShell();
+  refreshSelection();
+  commit();
+}
+
+// ------------------------------------------------------------- framing ---
+function boxOfFaces(faces) {
+  const box = new THREE.Box3();
+  const v = new THREE.Vector3();
+  for (const f of faces) {
+    for (let k = 0; k < 3; k++) {
+      const i = data.idx[3 * f + k];
+      v.set(data.pos[3 * i], data.pos[3 * i + 1], data.pos[3 * i + 2]);
+      box.expandByPoint(v);
+    }
+  }
+  return box;
+}
+
+function frameBox(box) {
+  if (box.isEmpty()) return;
+  const c = box.getCenter(new THREE.Vector3());
+  const r = Math.max(box.getSize(new THREE.Vector3()).length() / 2, diag * 0.01);
+  const dir = camera.position.clone().sub(controls.target).normalize();
+  controls.target.copy(c);
+  camera.position.copy(c).addScaledVector(dir, r * 2.6);
+}
+
+// --------------------------------------------------------------- shell ---
+function clearShell() {
+  disposeObj(shellObj);
+  shellObj = null;
+}
+
+function generateShell(frame = false) {
+  if (!data) return;
+  if (selection.size === 0) {
+    setStatus(regionOutliner.ctrl.length
+      ? "Finish the outline first: press Enter to close the loop and fill the region, then click Generate shell."
+      : "Nothing is selected yet. Use Outline (then press Enter) or Quick to select a region first.", true);
+    return;
+  }
+  setStatus("Generating shell...");
+  clearShell();
+
+  const sel = Int32Array.from(selection);
+  const ptr = Module._malloc(sel.byteLength);
+  Module.HEAP32.set(sel, ptr / 4);
+  const t0 = performance.now();
+  const rc = api.shell(ptr, sel.length, +$("thickness").value);
+  Module._free(ptr);
+  dbg(`generate_shell: ${sel.length} selected faces (first: ${Array.from(sel.slice(0, 8)).join(",")}), thickness ${(+$("thickness").value).toFixed(4)}, return code ${rc}`);
+  if (rc !== 0) { setStatus("Shell generation failed (the C++ side rejected the selection). See the Debug log.", true); return; }
+
+  const out = readBuffers(api.sV, api.sF, api.sVp, api.sFp);
+  dbg(`shell buffers: ${out ? out.pos.length / 3 : 0} vertices, ${out ? out.idx.length / 3 : 0} faces`);
+  if (!out) { setStatus("Shell came back empty. See the Debug log.", true); return; }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(out.pos, 3));
+  g.setIndex(new THREE.BufferAttribute(out.idx, 1));
+  g.computeVertexNormals();
+  shellObj = new THREE.Mesh(g, goldMat);
+  scene.add(shellObj);
+
+  g.computeBoundingBox();
+  const sb = g.boundingBox, size = sb.getSize(new THREE.Vector3());
+  const th = +$("thickness").value;
+  const regionBox = boxOfFaces(selection).expandByScalar(th * 1.5 + diag * 0.001);
+  const inside = regionBox.containsBox(sb);
+  setStatus(`Shell: ${api.sF().toLocaleString()} triangles in ${(performance.now() - t0).toFixed(0)} ms. ` +
+            `Size ${size.x.toFixed(1)} x ${size.y.toFixed(1)} x ${size.z.toFixed(1)} ${unit}, thickness ${th.toFixed(2)}.` +
+            (inside ? "" : " Warning: the shell extends beyond the selected region."));
+  dbg(`shell mesh added: size ${size.x.toFixed(3)} x ${size.y.toFixed(3)} x ${size.z.toFixed(3)}, inside region box: ${inside}, view: ${view}`);
+  rebuildStones(); // stones sit on the outer surface, so they depend on thickness
+  applyView();
+  if (frame) frameBox(sb);
+}
+
+let shellPending = false;
+function scheduleShell() {
+  if (shellPending) return;
+  shellPending = true;
+  requestAnimationFrame(() => { shellPending = false; generateShell(); });
+}
+
+// -------------------------------------------------------------- stones ---
+const stoneCaster = new THREE.Raycaster();
+stoneCaster.firstHitOnly = true;
+
+function projectToScan(c, n) {
+  const P = new THREE.Vector3(...c), N = new THREE.Vector3(...n);
+  const reach = diag * 0.08;
+  let best = null, bestD = Infinity;
+  for (const s of [1, -1]) {                 // look from both sides of the plane
+    stoneCaster.set(P.clone().addScaledVector(N, s * reach), N.clone().multiplyScalar(-s));
+    stoneCaster.far = reach * 2;
+    const h = stoneCaster.intersectObject(scanObj, false)[0];
+    if (h) {
+      const d = Math.abs(h.distance - reach);
+      if (d < bestD) { bestD = d; best = h; }
+    }
+  }
+  if (!best) return null;
+  if (!selection.has(best.faceIndex)) return null; // stones only go on the filled region
+  return { p: best.point.clone(), n: best.face.normal.clone().normalize() };
+}
+
+function drawAreas() {
+  disposeObj(areasObj);
+  areasObj = null;
+  if (!scanGeom || !stoneAreas.length) return;
+  areasObj = new THREE.Group();
+  for (const a of stoneAreas) {
+    const g = new THREE.BufferGeometry()
+      .setAttribute("position", new THREE.Float32BufferAttribute(a.lifted, 3));
+    const loop = new THREE.LineLoop(g, new THREE.LineBasicMaterial({ color: 0xff4b2b }));
+    loop.frustumCulled = false;
+    areasObj.add(loop);
+  }
+  scene.add(areasObj);
+}
+
+const stoneGeo = new THREE.IcosahedronGeometry(1, 1);
+const prongGeo = new THREE.SphereGeometry(1, 10, 8);
+
+function rebuildStones() {
+  drawAreas();
+  disposeObj(stoneGroup);
+  stoneGroup = null;
+  stoneCount = 0;
+  if (scanObj && decoration === "Diamonds" && stoneAreas.length) {
+    const size = +$("ssize").value, gap = +$("sgap").value, margin = +$("smargin").value;
+    const prongPct = +$("prong").value / 100;
+    const thickness = +$("thickness").value;
+    const r = size / 2;
+
+    const placed = [];
+    for (const area of stoneAreas) {
+      const L = layoutStones(area.pts, { pattern, size, gap, margin });
+      if (!L) continue;
+      for (const c of L.centers) {
+        const hit = projectToScan(c, L.n);
+        if (hit) placed.push(hit);
+      }
+    }
+    stoneCount = placed.length;
+
+    if (placed.length) {
+      stoneGroup = new THREE.Group();
+      const stones = new THREE.InstancedMesh(stoneGeo, stoneMat, placed.length);
+      const prongs = new THREE.InstancedMesh(prongGeo, goldMat, placed.length * 4);
+      const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), idQ = new THREE.Quaternion();
+      const pos = new THREE.Vector3(), sc = new THREE.Vector3(), pp = new THREE.Vector3();
+      const z = new THREE.Vector3(0, 0, 1), tx = new THREE.Vector3(), ty = new THREE.Vector3();
+
+      placed.forEach((pl, i) => {
+        q.setFromUnitVectors(z, pl.n);
+        tx.set(1, 0, 0).applyQuaternion(q);
+        ty.set(0, 1, 0).applyQuaternion(q);
+        pos.copy(pl.p).addScaledVector(pl.n, thickness + 0.1 * size); // on the shell's outer surface
+        m4.compose(pos, q, sc.set(r, r, r * 0.6));
+        stones.setMatrixAt(i, m4);
+        for (let k = 0; k < 4; k++) {
+          const a = Math.PI / 4 + (k * Math.PI) / 2;
+          pp.copy(pos).addScaledVector(tx, Math.cos(a) * r).addScaledVector(ty, Math.sin(a) * r)
+            .addScaledVector(pl.n, -0.05 * r);
+          const pr = prongPct * r;
+          m4.compose(pp, idQ, sc.set(pr, pr, pr));
+          prongs.setMatrixAt(i * 4 + k, m4);
+        }
+      });
+      stones.instanceMatrix.needsUpdate = true;
+      prongs.instanceMatrix.needsUpdate = true;
+      stones.frustumCulled = false;
+      prongs.frustumCulled = false;
+      stoneGroup.add(stones, prongs);
+      scene.add(stoneGroup);
+    }
+  }
+  applyView();
+  updateCount();
+}
+
+let stonePending = false;
+function scheduleStones() {
+  if (stonePending) return;
+  stonePending = true;
+  requestAnimationFrame(() => { stonePending = false; rebuildStones(); });
+}
+
+// --------------------------------------------------------------- views ---
+function applyView() {
+  const scan = view === "scan", comb = view === "combined", jew = view === "jewellery";
+  if (scanObj) scanObj.visible = scan || comb;
+  if (selObj) selObj.visible = scan;
+  if (shellObj) shellObj.visible = comb || jew;
+  if (stoneGroup) stoneGroup.visible = comb || jew;
+  if (areasObj) areasObj.visible = scan;
+  regionOutliner.setVisible(scan);
+  stoneOutliner.setVisible(scan);
+}
+function setView(v) {
+  view = v;
+  [...$("view").children].forEach((b) => b.classList.toggle("on", b.dataset.v === v));
+  applyView();
+}
+
+// -------------------------------------------------------------- picking ---
+const raycaster = new THREE.Raycaster();
+raycaster.firstHitOnly = true;
+const ndc = new THREE.Vector2();
+let downAt = null;
+
+function pickScan(e) {
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  return raycaster.intersectObject(scanObj, false)[0] || null;
+}
+
+function nearestVertex(hit) {
+  const f = hit.faceIndex;
+  let best = data.idx[3 * f], bd = Infinity;
+  for (let k = 0; k < 3; k++) {
+    const v = data.idx[3 * f + k];
+    const dx = data.pos[3 * v] - hit.point.x, dy = data.pos[3 * v + 1] - hit.point.y, dz = data.pos[3 * v + 2] - hit.point.z;
+    const d = dx * dx + dy * dy + dz * dz;
+    if (d < bd) { bd = d; best = v; }
+  }
+  return best;
+}
+
+function fillFromLoop(seedFace) {
+  const faces = wasmFill(regionOutliner.loop(), seedFace);
+  if (faces.length === 0) { setStatus("Nothing to fill there."); return; }
+  if (faces.length > 0.6 * (data.idx.length / 3)) {
+    setStatus("That fill covers most of the scan. Click inside the loop, and check the loop is closed.", true);
+    return;
+  }
+  for (const f of faces) selection.add(f);
+  regionOutliner.clear();
+  selectionChanged();
+  setStatus(`Filled ${faces.length.toLocaleString()} faces. Draw another loop, or add stone areas.`);
+}
+
+function autoFill() {
+  const loop = regionOutliner.loop();
+  const faces = wasmFillAuto(loop);
+  dbg(`auto fill: loop of ${loop.length} vertices -> ${faces.length} faces` + (faces.length ? ` (first: ${faces.slice(0, 8).join(",")})` : ""));
+  if (faces.length === 0) {
+    setStatus("That loop does not enclose an area. Press Backspace to remove the last point and try again.", true);
+    return;
+  }
+  for (const f of faces) selection.add(f);
+  regionOutliner.clear();
+  selectionChanged();
+  setStatus(`Filled ${faces.length.toLocaleString()} faces (the smaller side of the loop). Now click Generate shell.`);
+}
+
+function closeCurrent(fill = true) {
+  if (tool === "outline") {
+    if (regionOutliner.ctrl.length < 3) { setStatus("Add at least 3 points before closing the loop.", true); return; }
+    if (!regionOutliner.closed && !regionOutliner.close()) return;
+    if (fill) autoFill();
+    else setStatus("Loop closed. Click inside it to choose which side to fill.");
+  } else if (tool === "stone") {
+    if (stoneOutliner.close()) {
+      const loop = stoneOutliner.loop();
+      stoneAreas.push({ pts: loop.map(vertexRaw), lifted: loop.flatMap(vertexPoint) });
+      stoneOutliner.clear();
+      commit();
+      rebuildStones();
+      setStatus(decoration === "Diamonds"
+        ? `Stone area added (${stoneCount} stones in total).`
+        : "Stone area added. Switch Decoration to Diamonds to see the stones.");
+    } else if (stoneOutliner.ctrl.length < 3) setStatus("Add at least 3 points before closing the area.", true);
+  }
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  downAt = e.button === 0 ? { x: e.clientX, y: e.clientY } : null;
+});
+canvas.addEventListener("pointerup", (e) => {
+  if (!downAt || !scanObj) return;
+  const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
+  downAt = null;
+  if (moved > 4 || view !== "scan") return;   // an orbit drag, or not in the scan view
+
+  const hit = pickScan(e);
+  if (!hit) return;
+
+  if (tool === "outline") {
+    if (regionOutliner.closed) fillFromLoop(hit.faceIndex);
+    else {
+      regionOutliner.add(nearestVertex(hit));
+      if (regionOutliner.ctrl.length >= 3) setStatus("Press Enter (or Close loop) when the outline is complete.");
+    }
+  } else if (tool === "stone") {
+    stoneOutliner.add(nearestVertex(hit));
+    if (stoneOutliner.ctrl.length >= 3) setStatus("Press Enter (or Close loop) to finish this stone area.");
+  } else {                                     // quick select
+    const f = hit.faceIndex;
+    if (e.shiftKey || e.altKey) {
+      const faces = wasmGrow(f, +$("angle").value);
+      for (const t of faces) (e.shiftKey ? selection.add(t) : selection.delete(t));
+    } else if (selection.has(f)) selection.delete(f);
+    else selection.add(f);
+    selectionChanged();
+  }
+});
+
+// ------------------------------------------------------------------ UI ---
+const HINTS = {
+  outline: "Click points along the boundary; the path snaps to the scan. Press Enter to close the loop: the enclosed area is filled automatically (the smaller side). Shift+Enter closes without filling, so you can click inside to pick the side. Backspace removes the last point.",
+  quick: "Click: toggle a triangle. Shift+click: add a connected region. Alt+click: remove one.",
+  stone: "Click points around where stones should go, then press Enter to close the area.",
+};
+function setTool(t) {
+  tool = t;
+  $("toolHint").textContent = HINTS[t];
+  $("angleRow").style.display = t === "quick" ? "flex" : "none";
+  if (view !== "scan") setView("scan");
+}
+
+function seg(id, onChange) {
+  const el = $(id);
+  el.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    [...el.children].forEach((c) => c.classList.toggle("on", c === b));
+    onChange(b.dataset.v);
+  });
+}
+seg("tool", setTool);
+seg("decor", (v) => { decoration = v; rebuildStones(); });
+seg("pattern", (v) => { pattern = v; rebuildStones(); });
+seg("view", (v) => setView(v));
+setTool("outline");
+
+for (const id of ["ssize", "sgap", "smargin", "prong"]) {
+  $(id).addEventListener("input", () => { showValues(); scheduleStones(); });
+}
+$("thickness").addEventListener("input", () => {
+  showValues();
+  if (shellObj) scheduleShell();
+});
+$("angle").addEventListener("input", () => { $("angleV").textContent = `${$("angle").value}°`; });
+$("gen").addEventListener("click", () => {
+  generateShell(true);
+  if (shellObj && view === "scan") setView("combined");
+});
+$("closeLoop").addEventListener("click", () => closeCurrent(true));
+$("clearSel").addEventListener("click", () => {
+  regionOutliner.clear();
+  stoneOutliner.clear();
+  selection.clear();
+  stoneAreas = [];
+  clearShell();
+  refreshSelection();
+  commit();
+  rebuildStones();
+});
+$("fold").addEventListener("click", () => {
+  const folded = $("panel").classList.toggle("folded");
+  $("fold").textContent = folded ? "Show" : "Hide";
+});
+$("focus").addEventListener("click", () => {
+  if (!data) return;
+  if (shellObj) { shellObj.geometry.computeBoundingBox(); frameBox(shellObj.geometry.boundingBox); }
+  else if (selection.size) frameBox(boxOfFaces(selection));
+  else { scanGeom.computeBoundingBox(); frameBox(scanGeom.boundingBox); }
+});
+$("copyLog").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(debugLines.join("\n")); setStatus("Debug log copied to the clipboard."); }
+  catch { $("debugLog").select(); setStatus("Select all in the log box and copy it (Ctrl+C)."); }
+});
+$("undo").addEventListener("click", undo);
+$("redo").addEventListener("click", redo);
+$("file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (file) await loadFromBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+});
+
+window.addEventListener("keydown", (e) => {
+  const k = e.key;
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && k.toLowerCase() === "z") { e.preventDefault(); undo(); }
+  else if ((e.ctrlKey || e.metaKey) && (k.toLowerCase() === "y" || (e.shiftKey && k.toLowerCase() === "z"))) { e.preventDefault(); redo(); }
+  else if (k === "Enter") closeCurrent(!e.shiftKey);
+  else if (k === "Backspace") { const o = currentOutliner(); if (o) { e.preventDefault(); o.undoPoint(); } }
+  else if (k === "Escape") currentOutliner()?.clear();
+});
+
+// -------------------------------------------------------------- export ---
+function pushGeometry(out, geom, matrix) {
+  const p = geom.attributes.position, ix = geom.index;
+  const n = ix ? ix.count : p.count;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    v.fromBufferAttribute(p, ix ? ix.getX(i) : i);
+    if (matrix) v.applyMatrix4(matrix);
+    out.push(v.x, v.y, v.z);
+  }
+}
+
+function stlBytes(flat) {
+  const nt = flat.length / 9;
+  const buf = new ArrayBuffer(84 + 50 * nt);
+  const dv = new DataView(buf);
+  const head = "Generated by grillz-poc";
+  for (let i = 0; i < head.length; i++) dv.setUint8(i, head.charCodeAt(i));
+  dv.setUint32(80, nt, true);
+  let o = 84;
+  for (let t = 0; t < nt; t++) {
+    const b = t * 9;
+    const ux = flat[b + 3] - flat[b], uy = flat[b + 4] - flat[b + 1], uz = flat[b + 5] - flat[b + 2];
+    const vx = flat[b + 6] - flat[b], vy = flat[b + 7] - flat[b + 1], vz = flat[b + 8] - flat[b + 2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    dv.setFloat32(o, nx / len, true); dv.setFloat32(o + 4, ny / len, true); dv.setFloat32(o + 8, nz / len, true);
+    for (let k = 0; k < 9; k++) dv.setFloat32(o + 12 + 4 * k, flat[b + k], true);
+    dv.setUint16(o + 48, 0, true);
+    o += 50;
+  }
+  return buf;
+}
+
+$("export").addEventListener("click", () => {
+  if (!shellObj) { setStatus("Generate a shell first."); return; }
+  const flat = [];
+  pushGeometry(flat, shellObj.geometry, null);
+  if (stoneGroup && decoration === "Diamonds") {
+    const m = new THREE.Matrix4();
+    for (const im of stoneGroup.children) {
+      for (let i = 0; i < im.count; i++) { im.getMatrixAt(i, m); pushGeometry(flat, im.geometry, m); }
+    }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([stlBytes(flat)], { type: "model/stl" }));
+  a.download = "grillz_poc.stl";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  setStatus(`Exported ${(flat.length / 9).toLocaleString()} triangles.`);
+});
+
+// Scan to open on startup: ?file=name.stl in the page URL (like a command-line
+// argument). Without it, DEFAULT_SCAN is used. You can also pick a file in the panel.
+const DEFAULT_SCAN = "test_mesh.stl";
+const scanName = new URLSearchParams(window.location.search).get("file") || DEFAULT_SCAN;
+let scanBytes = null;
+try {
+  const resp = await fetch(scanName);
+  if (resp.ok) scanBytes = new Uint8Array(await resp.arrayBuffer());
+} catch { /* handled below */ }
+if (scanBytes) await loadFromBytes(scanBytes, scanName);
+else setStatus(`Could not fetch "${scanName}". Put it in the same folder as poc.html, or choose a file in the panel.`);
+</script>
+</body>
+</html>

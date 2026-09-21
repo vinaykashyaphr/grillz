@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Grillz WASM shell test</title>
+  <script src="grillz.js"></script>
+</head>
+<body>
+<pre id="log">Loading WASM...</pre>
+<a id="dl" style="display:none">Download shell STL</a>
+
+<script>
+const log = (s) => document.getElementById("log").textContent += "\n" + s;
+
+Module.onRuntimeInitialized = async () => {
+  log("WASM ready.");
+
+  // 1. Fetch the STL and place it in the WASM virtual filesystem.
+  const resp = await fetch("test_mesh.stl");
+  const bytes = new Uint8Array(await resp.arrayBuffer());
+  Module.FS.writeFile("/input.stl", bytes);
+
+  // 2. Load it.
+  const load = Module.cwrap("load_mesh", "number", ["string"]);
+  if (load("/input.stl") !== 0) { log("load_mesh failed"); return; }
+
+  const vCount = Module.ccall("mesh_vertex_count", "number", [], []);
+  const fCount = Module.ccall("mesh_face_count", "number", [], []);
+  log(`Loaded ${vCount} vertices, ${fCount} faces.`);
+
+  // 3. Copy the selected face indices into WASM memory.
+  const selected = new Int32Array([2, 3]);
+  const selPtr = Module._malloc(selected.byteLength);
+  Module.HEAP32.set(selected, selPtr / 4);
+
+  // 4. Generate the shell.
+  const thickness = 0.2;
+  const rc = Module.ccall("generate_shell", "number",
+    ["number", "number", "number"], [selPtr, selected.length, thickness]);
+  Module._free(selPtr);
+  if (rc !== 0) { log("generate_shell failed"); return; }
+
+  const sV = Module.ccall("shell_vertex_count", "number", [], []);
+  const sF = Module.ccall("shell_face_count", "number", [], []);
+  log(`Shell: ${sV} vertices, ${sF} faces.`);
+
+  // 5. Read the result buffers. slice() copies them out, so the data
+  //    stays valid even if WASM memory grows later.
+  const vPtr = Module.ccall("shell_vertices", "number", [], []);
+  const shellVerts = Module.HEAPF32.slice(vPtr / 4, vPtr / 4 + sV * 3);
+  log("First shell vertex: " + Array.from(shellVerts.slice(0, 3)).map(x => x.toFixed(3)).join(", "));
+
+  // 6. Export as STL for a download link (also handy to check in ParaView).
+  Module.ccall("write_shell_stl", "number", ["string"], ["/out.stl"]);
+  const out = Module.FS.readFile("/out.stl");
+  const dl = document.getElementById("dl");
+  dl.href = URL.createObjectURL(new Blob([out], { type: "model/stl" }));
+  dl.download = "shell_wasm.stl";
+  dl.style.display = "inline";
+};
+</script>
+</body>
+</html>
